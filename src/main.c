@@ -7,15 +7,20 @@
 // Select the Baudrate for the UART
 #define BAUDRATE 9600
 
-// For supporting printf function we override the _write function to redirect the output to UART
+//////////////////////////////////////////////////////////////////////////////
+// Predefined Programm functions
+//////////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief To support the printf function we override the _write function to redirect the Output to UART
+ * @param handle is typically ignored in this context, as we're redirecting all output to USART2
+ * @param data is a pointer to the buffer containing the data to be send
+ * @param size is the number of the bytes to send
+ * @return Returns the total number of bytes send
+ */
 int _write(int handle, char *data, int size)
 {
-    // 'handle' is typically ignored in this context, as we're redirecting all output to USART2
-    // 'data' is a pointer to the buffer containing the data to be sent
-    // 'size' is the number of bytes to send
-
     int count = size; // Make a copy of the size to use in the loop
-
     // Loop through each byte in the data buffer
     while (count--)
     {
@@ -25,30 +30,35 @@ int _write(int handle, char *data, int size)
         {
             // Wait here (busy wait) until TXE (Transmit Data Register Empty) flag is set
         }
-
         // Load the next byte of data into the transmit data register (TDR)
         // This sends the byte over UART
         USART2->TDR = *data++;
-
         // The pointer 'data' is incremented to point to the next byte to send
     }
-
-    // Return the total number of bytes that were written
     return size;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+// Main Program
+//////////////////////////////////////////////////////////////////////////////
 int main(void)
 {
     // Configure the system clock to 48MHz (defined in a separate function)
     SystemClock_Config();
 
+    // ---------------- Variable definitions ----------------
     // Define constants for the USART2 RX and TX pin numbers on GPIOA
     const uint8_t USART2_RX_PIN = 3;
     const uint8_t USART2_TX_PIN = 2;
+    // Define a constant for the LED Output pin number
+    const uint8_t LED_Pin = 5;
 
+    // Variable to store received byte
+    uint8_t rxb = '\0';
+
+    // ---------------- Clock Peripheral actions ----------------
     // Enable the clock for GPIOA peripheral (used for USART2 pins PA2 and PA3)
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-
     // Enable the clock for USART2 peripheral
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
@@ -81,10 +91,13 @@ int main(void)
     // Enable USART2 by setting UE bit in CR1 (bit 0)
     USART2->CR1 |= 0b1 << 0;
 
-    // Variable to store received byte
-    uint8_t rxb = '\0';
+    // ---------------- Output LED Pin Configuration ----------------
+    // Set the Pin Mode (Input, Output, Analog, Alternate Function) in the Moder Register
+    GPIOA->MODER |= 0b01 << (LED_Pin * 2);
+    // Set the Output type of the Port in the OTYPER Register
+    GPIOA->OTYPER &= ~(0b1 << (LED_Pin));
 
-    // Infinite loop: continuously receive data and print it
+    // ---------------- Continuous Loop - Receive data and set the LED  ----------------
     for (;;)
     {
         // Wait until the RXNE (Receive Not Empty) flag is set (bit 5 in ISR)
@@ -93,13 +106,23 @@ int main(void)
         {
             // Wait for data to be received
         }
-
         // Read the received byte from the RDR (Receive Data Register)
         rxb = USART2->RDR;
-
         // Log the received byte using printf via the LOG macro
         // The printf function is supported through the custom _write() function,
         // which redirects output to UART (USART2)
-        LOG("[DEBUG-LOG]: %d\r\n", rxb);
+        if ((rxb == 49))
+        {
+            GPIOA->BRR &= ~(0b1 << LED_Pin);
+            GPIOA->BSRR |= 0b1 << LED_Pin;
+            LOG("[DEBUG-LOG]: LED on (%d)\r\n", rxb);
+        }
+        else
+        {
+            GPIOA->BRR |= 0b1 << LED_Pin;
+            GPIOA->BSRR &= ~(0b1 << LED_Pin);
+            LOG("[DEBUG-LOG]: LED off (%d)\r\n", rxb);
+        }
     }
+
 }
