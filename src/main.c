@@ -1,167 +1,105 @@
 #include <stm32f0xx.h>
-#include <stdint.h>
-#include <string.h>
+#include "clock_.h"
+#include <stdio.h>
 
-#define BAUD 9600
+#define LOG(msg...) printf(msg);
 
-#define LED_R     1   // PC1  -> Shield 2 - LED R
-#define LED_G     6   // PB6  -> Shield 2 - LED G
-#define LED_B     10  // PA10 -> Shield 2 - LED B
-#define IN_PIN_1  8   // PC8 -> Shield 1 - PWM vorwärts
-#define IN_PIN_2  4   // PA4 -> Shield 2 - PWM rückwärts
-#define SLEEP_PIN 0   // PB0
+// Select the Baudrate for the UART
+#define BAUDRATE 9600
 
-char id[4];
-uint8_t len,payload[8],p=0,crc_rx,state=0;
+// For supporting printf function we override the _write function to redirect the output to UART
+int _write(int handle, char *data, int size)
+{
+    // 'handle' is typically ignored in this context, as we're redirecting all output to USART2
+    // 'data' is a pointer to the buffer containing the data to be sent
+    // 'size' is the number of bytes to send
 
-enum{WAIT_HEADER,READ_ID,READ_LEN,READ_PAYLOAD,READ_CRC,WAIT_EOF};
+    int count = size; // Make a copy of the size to use in the loop
 
-int _write(int file,char *ptr,int len){
-    for(int i=0;i<len;i++){
-        while(!(USART2->ISR & USART_ISR_TXE));
-        USART2->TDR=ptr[i];
-    }
-    return len;
-}
-
-uint8_t CRC_Calc(uint8_t *data,uint8_t len){
-    RCC->AHBENR|=RCC_AHBENR_CRCEN;
-    CRC->CR=CRC_CR_RESET;
-    for(int i=0;i<len;i++) CRC->DR=data[i];
-    return CRC->DR & 0xFF;
-}
-
-void LED(char c,uint8_t s){
-    if(c=='R') GPIOC->BSRR=s?(1<<LED_R):(1<<(LED_R+16));
-    if(c=='G') GPIOB->BSRR=s?(1<<LED_G):(1<<(LED_G+16));
-    if(c=='B') GPIOA->BSRR=s?(1<<LED_B):(1<<(LED_B+16));
-}
-
-void Motor(uint8_t dir,uint16_t speed){
-    GPIOB->BSRR=(1<<SLP);
-
-    if(dir==0x0F)
-        GPIOA->BSRR=(1<<PH);
-    else
-        GPIOA->BSRR=(1<<(PH+16));
-
-    TIM3->CCR3=speed;
-}
-
-int main(void){
-
-    RCC->AHBENR|=RCC_AHBENR_GPIOAEN|RCC_AHBENR_GPIOBEN|RCC_AHBENR_GPIOCEN;
-    RCC->APB1ENR|=RCC_APB1ENR_USART2EN|RCC_APB1ENR_TIM3EN;
-
-    GPIOA->MODER  |= (2<<(2*2))|(2<<(3*2));
-    GPIOA->AFR[0] |= (1<<(2*4))|(1<<(3*4));
-
-    USART2->BRR=48000000/BAUD;
-    USART2->CR1|=USART_CR1_RE|USART_CR1_TE|USART_CR1_UE;
-
-    GPIOC->MODER|=(1<<(LED_R*2));
-    GPIOB->MODER|=(1<<(LED_G*2));
-    GPIOA->MODER|=(1<<(LED_B*2));
-
-    GPIOA->MODER|=(1<<(PH*2));
-    GPIOB->MODER|=(1<<(SLP*2));
-
-    GPIOC->MODER&=~(3<<(PWM*2));
-    GPIOC->MODER|=(2<<(PWM*2));
-
-    TIM3->ARR=65535;
-    TIM3->CCMR2|=(6<<4);
-    TIM3->CCER|=TIM_CCER_CC3E;
-    TIM3->CR1|=TIM_CR1_CEN;
-
-    while(1){
-
-        if(USART2->ISR & USART_ISR_RXNE){
-
-            uint8_t b=USART2->RDR;
-
-            switch(state){
-
-                case WAIT_HEADER:
-
-                    if(b=='#'){
-                        p=0;
-                        state=READ_ID;
-                    }
-
-                break;
-
-                case READ_ID:
-
-                    id[p++]=b;
-
-                    if(p>=3){
-                        id[3]=0;
-                        p=0;
-                        state=READ_LEN;
-                    }
-
-                break;
-
-                case READ_LEN:
-
-                    len=b;
-                    p=0;
-                    state=READ_PAYLOAD;
-
-                break;
-
-                case READ_PAYLOAD:
-
-                    payload[p++]=b;
-
-                    if(p>=len)
-                        state=READ_CRC;
-
-                break;
-
-                case READ_CRC:
-
-                    crc_rx=b;
-                    state=WAIT_EOF;
-
-                break;
-
-                case WAIT_EOF:
-
-                    if(b=='$'){
-
-                        uint8_t data[16];
-
-                        memcpy(data,id,3);
-                        data[3]=len;
-                        memcpy(&data[4],payload,len);
-
-                        if(CRC_Calc(data,4+len)==crc_rx){
-
-                            if(strcmp(id,"MMM")==0){
-
-                                uint16_t speed=
-                                (payload[1]<<8)|payload[2];
-
-                                Motor(payload[0],speed);
-                            }
-
-                            if(strcmp(id,"LLR")==0)
-                                LED('R',payload[0]);
-
-                            if(strcmp(id,"LLG")==0)
-                                LED('G',payload[0]);
-
-                            if(strcmp(id,"LLB")==0)
-                                LED('B',payload[0]);
-                        }
-                    }
-
-                    state=WAIT_HEADER;
-
-                break;
-            }
+    // Loop through each byte in the data buffer
+    while (count--)
+    {
+        // Wait until the transmit data register (TDR) is empty,
+        // indicating that USART2 is ready to send a new byte
+        while (!(USART2->ISR & USART_ISR_TXE))
+        {
+            // Wait here (busy wait) until TXE (Transmit Data Register Empty) flag is set
         }
+
+        // Load the next byte of data into the transmit data register (TDR)
+        // This sends the byte over UART
+        USART2->TDR = *data++;
+
+        // The pointer 'data' is incremented to point to the next byte to send
+    }
+
+    // Return the total number of bytes that were written
+    return size;
+}
+
+int main(void)
+{
+    // Configure the system clock to 48MHz (defined in a separate function)
+    SystemClock_Config();
+
+    // Define constants for the USART2 RX and TX pin numbers on GPIOA
+    const uint8_t USART2_RX_PIN = 3;
+    const uint8_t USART2_TX_PIN = 2;
+
+    // Enable the clock for GPIOA peripheral (used for USART2 pins PA2 and PA3)
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    // Enable the clock for USART2 peripheral
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+
+    // ---------------- UART TX Pin Configuration (PA2) ----------------
+    // Set PA2 mode to 'Alternate Function' (MODER bits = 10)
+    GPIOA->MODER |= 0b10 << (USART2_TX_PIN * 2);
+
+    // Select AF1 (Alternate Function 1) for PA2 (AFR[0] corresponds to pins 0–7)
+    GPIOA->AFR[0] |= 0b0001 << (4 * USART2_TX_PIN);
+
+    // ---------------- UART RX Pin Configuration (PA3) ----------------
+    // Set PA3 mode to 'Alternate Function' (MODER bits = 10)
+    GPIOA->MODER |= 0b10 << (USART2_RX_PIN * 2);
+
+    // Select AF1 (Alternate Function 1) for PA3
+    GPIOA->AFR[0] |= 0b0001 << (4 * USART2_RX_PIN);
+
+    // ---------------- USART2 Configuration ----------------
+
+    // Set the baud rate (BRR = APB frequency divided by desired baud rate)
+    // APB_FREQ and BAUDRATE are assumed to be defined elsewhere
+    USART2->BRR = (APB_FREQ / BAUDRATE);
+
+    // Enable USART2 receiver by setting RE bit in CR1 (bit 2)
+    USART2->CR1 |= 0b1 << 2;
+
+    // Enable USART2 transmitter by setting TE bit in CR1 (bit 3)
+    USART2->CR1 |= 0b1 << 3;
+
+    // Enable USART2 by setting UE bit in CR1 (bit 0)
+    USART2->CR1 |= 0b1 << 0;
+
+    // Variable to store received byte
+    uint8_t rxb = '\0';
+
+    // Infinite loop: continuously receive data and print it
+    for (;;)
+    {
+        // Wait until the RXNE (Receive Not Empty) flag is set (bit 5 in ISR)
+        // This indicates that data has been received and is ready to be read
+        while (!(USART2->ISR & (0b1 << 5)))
+        {
+            // Wait for data to be received
+        }
+
+        // Read the received byte from the RDR (Receive Data Register)
+        rxb = USART2->RDR;
+
+        // Log the received byte using printf via the LOG macro
+        // The printf function is supported through the custom _write() function,
+        // which redirects output to UART (USART2)
+        LOG("[DEBUG-LOG]: %d\r\n", rxb);
     }
 }
