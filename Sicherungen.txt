@@ -1,0 +1,85 @@
+void FSM_Process(void) {
+    if (FIFO_Empty()) return;
+
+    static uint8_t id_i = 0;
+
+    uint8_t b = FIFO_Read();
+
+    switch (state) {
+
+        case WAIT_HEADER:
+            if (b == '#') {
+                id_i = 0;
+                payload_i = 0;
+                state = READ_ID;
+            }
+            break;
+
+        case READ_ID:
+            id[id_i++] = b;
+
+            if (id_i == 3) {
+                id[3] = 0;
+                state = READ_LEN;
+            }
+            break;
+
+        case READ_LEN:
+            len = b;
+            payload_i = 0;
+            state = READ_PAYLOAD;
+            break;
+
+        case READ_PAYLOAD:
+            payload[payload_i++] = b;
+
+            if (payload_i >= len)
+                state = READ_CRC;
+
+            break;
+
+        case READ_CRC:
+            crc_rx = b;
+            state = WAIT_EOF;
+            break;
+
+        case WAIT_EOF: {
+
+            if (b == '$') {
+
+                uint8_t buf[32];
+
+                memcpy(buf, id, 3);
+
+                buf[3] = len;
+
+                memcpy(&buf[4], payload, len);
+
+                uint8_t crc_calc = CRC_Calc(buf, len + 4);
+
+                if (crc_calc == crc_rx) {
+
+                    if (!strcmp(id, "MMM")) {
+                        uint16_t speed =
+                            ((uint16_t)payload[1] << 8) |
+                            payload[2];
+
+                        Motor_Control(payload[0], speed);
+                    }
+
+                    if (!strcmp(id, "LLR"))
+                        LED_Control('R', payload[0]);
+
+                    if (!strcmp(id, "LLG"))
+                        LED_Control('G', payload[0]);
+
+                    if (!strcmp(id, "LLB"))
+                        LED_Control('B', payload[0]);
+                }
+            }
+
+            state = WAIT_HEADER;
+            break;
+        }
+    }
+}
